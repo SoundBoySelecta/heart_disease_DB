@@ -1,0 +1,201 @@
+# Databricks notebook source
+dbutils.library.installPyPI("mlflow")
+dbutils.library.restartPython()
+import mlflow
+
+
+# COMMAND ----------
+
+# File location and type
+file_location = "dbfs:/FileStore/tables/heart_disease.csv"
+file_type = "csv"
+
+# CSV options
+infer_schema = "true"
+first_row_is_header = "true"
+delimiter = ","
+
+# The applied options are for CSV files. For other file types, these will be ignored.
+df = spark.read.format(file_type) \
+  .option("inferSchema", infer_schema) \
+  .option("header", first_row_is_header) \
+  .option("sep", delimiter) \
+  .load(file_location)
+
+display(df)
+
+# COMMAND ----------
+
+pd_df = df.toPandas()
+
+# COMMAND ----------
+
+pd_df.corr()
+
+# COMMAND ----------
+
+display(df.describe())
+
+# COMMAND ----------
+
+df.stat.corr("age","target")
+
+# COMMAND ----------
+
+# Split the dataset randomly into 70% for training and 30% for testing. 
+train, test = df.randomSplit([0.7, 0.3], seed = 0)
+(train.count(), test.count())
+print("We have %d training examples and %d test examples." % (train.count(), test.count()))
+
+
+
+# COMMAND ----------
+
+display(train)
+
+# COMMAND ----------
+
+display(test)
+
+# COMMAND ----------
+
+display(train.select("target", "age"))
+
+# COMMAND ----------
+
+display(train.select("sex", "target"))
+#sex: The person's sex (1 = male, 0 = female)
+
+# COMMAND ----------
+
+display(train.select("cp", "target"))
+#cp: The chest pain experienced (Value 0: typical angina, Value 1: atypical angina, Value 2: non-anginal pain, Value 3: asymptomatic)
+
+# COMMAND ----------
+
+from pyspark.ml.feature import VectorAssembler, VectorIndexer
+featuresCols = df.columns
+featuresCols.remove('target')
+# This concatenates all feature columns into a single feature vector in a new column "rawFeatures".
+vectorAssembler = VectorAssembler(inputCols=featuresCols, outputCol="rawFeatures")
+# This identifies categorical features and indexes them.
+vectorIndexer = VectorIndexer(inputCol="rawFeatures", outputCol="features", maxCategories=4)
+
+
+# COMMAND ----------
+
+from pyspark.ml.classification import GBTClassifier, DecisionTreeClassifier
+# ml.classification import decisiontree
+# Takes the "features" column and learns to predict "target"
+#gbt = GBTClassifier(labelCol="target", maxDepth=3)
+#dt = DecisionTreeClassifier(labelCol="target", featuresCol="features", maxDepth=3)setLabelCol()
+dt = DecisionTreeClassifier()
+
+# COMMAND ----------
+
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
+#from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+# Define a grid of hyperparameters to test:
+#  - maxDepth: max depth of each decision tree in the GBT ensemble
+#  - maxIter: iterations, i.e., number of trees in each GBT ensemble
+# In this example notebook, we keep these values small.  In practice, to get the highest accuracy, you would likely want to try deeper trees (10 or higher) and more trees in the ensemble (>100).
+paramGrid = ParamGridBuilder()\
+  .addGrid(gbt.maxDepth, [2, 5])\
+  .addGrid(gbt.maxIter, [10, 100])\
+  .build()
+# We define an evaluation metric.  This tells CrossValidator how well we are doing by comparing the true labels with predictions.
+#evaluator = RegressionEvaluator(metricName="rmse", labelCol=gbt.getLabelCol(), predictionCol=gbt.getPredictionCol())
+#evaluator = BinaryClassificationEvaluator(metricName="areaUnderROC", labelCol=gbt.getLabelCol())
+evaluator = BinaryClassificationEvaluator()
+# Declare the CrossValidator, which runs model tuning for us.
+cv = CrossValidator(estimator=gbt, evaluator=evaluator, estimatorParamMaps=paramGrid, numFolds=5)
+
+
+
+# COMMAND ----------
+
+from pyspark.ml import Pipeline
+pipeline = Pipeline(stages=[vectorAssembler, vectorIndexer, cv])
+
+# COMMAND ----------
+
+pipelineModel = pipeline.fit(train)
+
+# COMMAND ----------
+
+predictions = pipelineModel.transform(test)
+
+# COMMAND ----------
+
+display(predictions.select("target", "prediction", *featuresCols))
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val training = training
+# MAGIC val test = test
+# MAGIC 
+# MAGIC // Cache data for multiple uses.
+# MAGIC training.cache()
+# MAGIC test.cache()
+# MAGIC 
+# MAGIC println(s"We have ${training.count} training images and ${test.count} test images.")
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC import org.apache.spark.ml.classification.{DecisionTreeClassifier, DecisionTreeClassificationModel}
+# MAGIC import org.apache.spark.ml.feature.StringIndexer
+# MAGIC import org.apache.spark.ml.Pipeline
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC // StringIndexer: Read input column "label" (digits) and annotate them as categorical values.
+# MAGIC val indexer = new StringIndexer().setInputCol("label").setOutputCol("indexedLabel")
+# MAGIC // DecisionTreeClassifier: Learn to predict column "indexedLabel" using the "features" column.
+# MAGIC val dtc = new DecisionTreeClassifier().setLabelCol("indexedLabel")
+# MAGIC // Chain indexer + dtc together into a single ML Pipeline.
+# MAGIC val pipeline = new Pipeline().setStages(Array(indexer, dtc))
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val model = pipeline.fit(training)
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC // Import the ML algorithms we will use.
+# MAGIC import org.apache.spark.ml.classification.{DecisionTreeClassifier, DecisionTreeClassificationModel}
+# MAGIC import org.apache.spark.ml.feature.StringIndexer
+# MAGIC import org.apache.spark.ml.Pipeline
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC // StringIndexer: Read input column "label" (digits) and annotate them as categorical values.
+# MAGIC val indexer = new StringIndexer().setInputCol("label").setOutputCol("indexedLabel")
+# MAGIC // DecisionTreeClassifier: Learn to predict column "indexedLabel" using the "features" column.
+# MAGIC val dtc = new DecisionTreeClassifier().setLabelCol("indexedLabel")
+# MAGIC // Chain indexer + dtc together into a single ML Pipeline.
+# MAGIC val pipeline = new Pipeline().setStages(Array(indexer, dtc))
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val model = pipeline.fit(training)
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val tree = model.stages.last.asInstanceOf[DecisionTreeClassificationModel]
+# MAGIC display(tree)
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
